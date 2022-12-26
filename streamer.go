@@ -30,10 +30,10 @@ type Streamer struct{
 
 //Creates a streamer with a userId and keyId, which you can retrieve from the
 //mevlink website.
-func NewStreamer(userId, keyId string) *Streamer {
+func NewStreamer(keyId, keySecret string) *Streamer {
   var ret Streamer
   ret.KeyId = keyId
-  ret.KeySecret = userId
+  ret.KeySecret = keySecret
   return &ret
 }
 
