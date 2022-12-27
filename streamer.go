@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"golang.org/x/crypto/sha3"
 )
 
 type Streamer struct{
@@ -48,7 +47,7 @@ func (s *Streamer) OnTransaction(f func (txb []byte, noticed, propagated time.Ti
 
 //Begins the streaming process and starts making callbacks to functions
 //provided in OnTransaction. Automatically attempts to reconnect. Errors if the
-//connection handshake fails.
+//connection handshake fails despite a backoff.
 func (s *Streamer) Stream() error {
   for {
     var conn net.Conn
@@ -60,7 +59,7 @@ func (s *Streamer) Stream() error {
         if err == nil {
           break;
         } else {
-          time.Sleep(time.Second)
+          time.Sleep(time.Second * (time.Duration(i) * time.Duration(i) * 5))
         }
       }
       if err != nil {
@@ -137,12 +136,6 @@ func (s *Streamer) Stream() error {
           break;
         }
         noticed := time.UnixMicro(int64(binary.BigEndian.Uint64(noticed_b)))
-
-        //Getting the transaction hash and printing the relevant times
-        var hasher = sha3.NewLegacyKeccak256()
-        hasher.Write(tx)
-        var tx_hash = hasher.Sum(nil)
-        log.Println("New (unauthenticated!) tx: ", hex.EncodeToString(tx_hash), "after", time.Now().UnixMicro()-propagated.UnixMicro())
 
         //Finally, the mac
         given_mac, err := readUntilFull(32, conn)
