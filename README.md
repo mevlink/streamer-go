@@ -35,8 +35,10 @@ func main() {
 
 This library gives you a callback that three things:
 - The full encoded RLP transaction bytes.
-- The time at which the Mevlink node first learned of the transaction's existence (for example, via a NEW POOLED TRANSACTION HASHES request)
-- The time at which the Mevlink node sent the transaction to you over the TCP stream.
+- The time at which the Mevlink node first learned of the transaction's
+  existence (for example, via a NEW\_POOLED\_TRANSACTION\_HASHES request)
+- The time at which the Mevlink node sent the transaction to you over the TCP
+  stream.
 
 The binary streaming API is deliberately simple; if you are interested in
 learning how it works, feel free to read the comments. The ordering of the
@@ -44,9 +46,10 @@ emitted fields, timing information, and MAC is such that you can choose to
 consider/respond to transactions before you have timing information or have
 verified the authentication signature.
 
-The stream gives no guarantee of transactions being valid or successfully
-processed on-chain by BSC fullnodes; it is simply transaction that has been
-proposed to the mevlink network by another node.
+The stream gives no guarantee of transactions being valid or will be
+successfully processed on-chain by BSC fullnodes; it simply provides
+transaction that have been seen via P2P node connections. Stay sharp, and
+verify what you need to.
 
 On our immediate roadmap:
 - Introduce a UDP socket to remove TCP performance/reordering issues.
