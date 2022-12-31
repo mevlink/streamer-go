@@ -45,33 +45,32 @@ func (s *Streamer) OnTransaction(f func (txb []byte, noticed, propagated time.Ti
   s.m.Unlock()
 }
 
+func (s *Streamer) Stream() error {
+  for {
+    if err := s._stream(); err != nil {
+      log.Println("mevlink streaming error: " + err.Error() + "; reconnecting in one second...")
+      time.Sleep(time.Second);
+    } else {
+      return nil;
+    }
+  }
+}
+
 //Begins the streaming process and starts making callbacks to functions
 //provided in OnTransaction. Automatically attempts to reconnect. Errors if the
 //connection handshake fails despite a backoff.
-func (s *Streamer) Stream() error {
+func (s *Streamer) _stream() error {
   for {
-    var conn net.Conn
-    var mac hash.Hash
-    {
-      var err error
-      for i := 0; i < 3; i++ {
-        conn, mac, err = s.connect()
-        if err == nil {
-          break;
-        } else {
-          time.Sleep(time.Second * (time.Duration(i) * time.Duration(i) * 5))
-        }
-      }
-      if err != nil {
-        return errors.Wrap(err, "could not connect to server")
-      }
+    conn, mac, err := s.connect()
+    if err != nil {
+      return errors.Wrap(err, "error connecting outright");
     }
 
     //Now we are authenticated and the server should start sending TRANSACTION messages.
     for {
       msg_id, err := readUntilFull(1, conn)
       if err != nil {
-        break;
+        return errors.Wrap(err, "error reading msg id byte")
       }
       switch msg_id[0] {
       case TRANSACTION:
@@ -86,29 +85,29 @@ func (s *Streamer) Stream() error {
         //See: https://ethereum.org/en/developers/docs/data-structures-and-encoding/rlp/
         tx, err := readUntilFull(1, conn)
         if err != nil {
-          break;
+          return errors.Wrap(err, "error reading tx ln header")
         }
         {
           if tx[0] < 0xc0 {
-            log.Fatal("Transactions are lists, so this should never happen")
+            return errors.New("unsupported tx error")
           } else if tx[0] < 0xf8 {
             txb_remaining, err := readUntilFull(int(tx[0]-0xc0), conn)
             if err != nil {
-              log.Fatal("error reading tx data: ", err)
+              return errors.Wrap(err, "error reading tx body");
             }
             tx = append(tx, txb_remaining...)
           } else {
             var ln_of_ln = tx[0] - 0xf7
             txb_ln, err := readUntilFull(int(ln_of_ln), conn)
             if err != nil {
-              log.Fatal("error reading tx data: ", err)
+              return errors.Wrap(err, "error reading tx body");
             }
             tx = append(tx, txb_ln...)
             var i_b = append(make([]byte, 8-ln_of_ln), txb_ln...)
             ln := binary.BigEndian.Uint64(i_b)
             txb, err := readUntilFull(int(ln), conn)
             if err != nil {
-              log.Fatal("error reading tx data: ", err)
+              return errors.Wrap(err, "error reading tx body");
             }
             tx = append(tx, txb...)
           }
@@ -123,7 +122,7 @@ func (s *Streamer) Stream() error {
         //transaction.
         propagated_b, err := readUntilFull(8, conn)
         if err != nil {
-          break;
+          return errors.Wrap(err, "error reading propagation bytes");
         }
         propagated := time.UnixMicro(int64(binary.BigEndian.Uint64(propagated_b)))
 
@@ -133,14 +132,14 @@ func (s *Streamer) Stream() error {
         //heard about the transaction at time of sending.
         noticed_b, err := readUntilFull(8, conn)
         if err != nil {
-          break;
+          return errors.Wrap(err, "error reading noticed bytes");
         }
         noticed := time.UnixMicro(int64(binary.BigEndian.Uint64(noticed_b)))
 
         //Finally, the mac
         given_mac, err := readUntilFull(32, conn)
         if err != nil {
-          break;
+          return errors.Wrap(err, "error reading mac");
         }
         mac.Reset()
         mac.Write(msg_id)
@@ -148,8 +147,7 @@ func (s *Streamer) Stream() error {
         mac.Write(propagated_b)
         mac.Write(noticed_b)
         if bytes.Compare(given_mac, mac.Sum(nil)) != 0 {
-          //log.Println("wrong mac!!! check the cablez!!!!")
-          break;
+          return errors.New("mac was incorrect")
         } else {
           s.m.Lock()
           for _, f := range s.subs {
@@ -161,8 +159,6 @@ func (s *Streamer) Stream() error {
         log.Fatal("No other message ids at present")
       }
     }
-    //Close cause come error occurred
-    conn.Close()
   }
 }
 
