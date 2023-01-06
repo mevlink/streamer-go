@@ -18,21 +18,31 @@ import (
 	"github.com/pkg/errors"
 )
 
+type Network uint
+
+const (
+  Ethereum Network = 1
+  BinanceSmartChain Network = 56
+)
+
+
 type Streamer struct{
   m sync.Mutex
 
   KeyId string
   KeySecret string
+  Network Network
 
   subs []func (txb []byte, noticed, propagated time.Time)
 }
 
 //Creates a streamer with a userId and keyId, which you can retrieve from the
 //mevlink website.
-func NewStreamer(keyId, keySecret string) *Streamer {
+func NewStreamer(keyId, keySecret string, network Network) *Streamer {
   var ret Streamer
   ret.KeyId = keyId
   ret.KeySecret = keySecret
+  ret.Network = network
   return &ret
 }
 
@@ -165,10 +175,22 @@ func (s *Streamer) _stream() error {
 func (s *Streamer) connect() (net.Conn, hash.Hash, error) {
   var streaming_ip_loc string
   if provided_host := os.Getenv("MEVLINK_HOST"); provided_host == "" {
-    streaming_ip_loc = "https://mevlink.com/api/get_node_ips"
+    streaming_ip_loc = "https://mevlink.com/api/"
   } else {
-    streaming_ip_loc = provided_host + "/api/get_node_ips"
+    streaming_ip_loc = provided_host + "/api/"
   }
+  
+  var get_node_ips_path string
+  switch (s.Network) {
+  case Ethereum:
+    get_node_ips_path = "get_bsc_node_ips"
+  case BinanceSmartChain:
+    get_node_ips_path = "get_eth_node_ips"
+  default:
+    return nil, nil, errors.New("Unsupported network")
+  }
+
+  streaming_ip_loc += get_node_ips_path
 
   resp, err := http.Get(streaming_ip_loc)
   if err != nil {
@@ -217,11 +239,11 @@ func (s *Streamer) connect() (net.Conn, hash.Hash, error) {
 	challenge_msg_b, err := readUntilFull(1+16, bestConn)
 	if err != nil {
     bestConn.Close()
-    return nil, nil, errors.Wrap(err, "error reading challenge bytes")
+    return nil, nil, errors.Wrap(err, "error reading challenge bytes; bad user ID?")
 	}
 	if challenge_msg_b[0] != CHALLENGE {
     bestConn.Close()
-    return nil, nil, errors.Wrap(err, "error reading challenge bytes")
+    return nil, nil, errors.Wrap(err, "error reading challenge bytes; bad message id; internal server error")
 	}
 	challenge_b := challenge_msg_b[1 : 1+16]
 
