@@ -97,30 +97,36 @@ func (s *Streamer) _stream() error {
         if err != nil {
           return errors.Wrap(err, "error reading tx ln header")
         }
-        {
-          if tx[0] < 0xc0 {
-            return errors.New("unsupported tx error")
-          } else if tx[0] < 0xf8 {
-            txb_remaining, err := readUntilFull(int(tx[0]-0xc0), conn)
-            if err != nil {
-              return errors.Wrap(err, "error reading tx body");
-            }
-            tx = append(tx, txb_remaining...)
+        var remaining int
+
+        if tx[0] > 0x80 && tx[0] < 0xb8 {
+          remaining = int(tx[0] - 0x80)
+        } else if tx[0] > 0xb7 && tx[0] < 0xc0 {
+          var ln_of_ln = tx[0] - 0xb7
+          if i_b, err := readUntilFull(int(ln_of_ln), conn); err != nil {
+            return errors.Wrap(err, "error reading ln of ln")
           } else {
-            var ln_of_ln = tx[0] - 0xf7
-            txb_ln, err := readUntilFull(int(ln_of_ln), conn)
-            if err != nil {
-              return errors.Wrap(err, "error reading tx body");
-            }
-            tx = append(tx, txb_ln...)
-            var i_b = append(make([]byte, 8-ln_of_ln), txb_ln...)
-            ln := binary.BigEndian.Uint64(i_b)
-            txb, err := readUntilFull(int(ln), conn)
-            if err != nil {
-              return errors.Wrap(err, "error reading tx body");
-            }
-            tx = append(tx, txb...)
+            tx = append(tx, i_b...)
+            remaining = int(binary.BigEndian.Uint64(append(make([]byte, 8-len(i_b)), i_b...)))
           }
+        } else if tx[0] > 0xc0 && tx[0] < 0xf8 {
+          remaining = int(tx[0] - 0xc0)
+        } else if tx[0] > 0xf7 {
+          var ln_of_ln = tx[0] - 0xf7
+          if i_b, err := readUntilFull(int(ln_of_ln), conn); err != nil {
+            return errors.Wrap(err, "error reading ln of ln")
+          } else {
+            tx = append(tx, i_b...)
+            remaining = int(binary.BigEndian.Uint64(append(make([]byte, 8-len(i_b)), i_b...)))
+          }
+        } else {
+          log.Fatal("bad transaction data; got ln of ", tx[0])
+        }
+
+        if txb, err := readUntilFull(remaining, conn); err != nil {
+          return errors.Wrap(err, "error reading tx bytes")
+        } else {
+          tx = append(tx, txb...)
         }
 
         //Now that you have the transaction, you can either respond to it
@@ -183,9 +189,9 @@ func (s *Streamer) connect() (net.Conn, hash.Hash, error) {
   var get_node_ips_path string
   switch (s.Network) {
   case Ethereum:
-    get_node_ips_path = "get_bsc_node_ips"
-  case BinanceSmartChain:
     get_node_ips_path = "get_eth_node_ips"
+  case BinanceSmartChain:
+    get_node_ips_path = "get_bsc_node_ips"
   default:
     return nil, nil, errors.New("Unsupported network")
   }
