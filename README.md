@@ -54,4 +54,3 @@ verify what you need to.
 On our immediate roadmap:
 - Introduce a UDP socket to remove TCP performance/reordering issues.
 - Add configuration options for receiving blocks, optional encryption, timing information.
-- Additional chain networks (aside from BSC).
