@@ -67,53 +67,53 @@ func (s *Streamer) OnTransaction(f func(txb []byte, noticed, propagated time.Tim
 }
 
 func (s *Streamer) _send(msg []byte) error {
-  var idx = 0
-  for idx < len(msg) {
-    if n, err := s.conn.Write(msg[idx:]); err != nil {
-      return errors.Wrap(err, "error sending b")
-    } else {
-      idx += n
-    }
-  }
-  return nil
+	var idx = 0
+	for idx < len(msg) {
+		if n, err := s.conn.Write(msg[idx:]); err != nil {
+			return errors.Wrap(err, "error sending b")
+		} else {
+			idx += n
+		}
+	}
+	return nil
 }
 
 func (s *Streamer) send(msg []byte) error {
 	s.m.Lock()
 	if s.active {
-	  s.m.Unlock()
+		s.m.Unlock()
 		return errors.New("no active connection; haven't yet begun streaming")
 	} else {
-    if s.conn == nil {
-      var c = make(chan error)
-      s.queuedMessages = append(s.queuedMessages, struct {
-        b   []byte
-        ret chan error
-      }{
-        b:   msg,
-        ret: c,
-      })
-	    s.m.Unlock()
-      return <-c
-    } else {
-      err := s._send(msg)
-      s.m.Unlock()
-      return err
-    }
-  }
+		if s.conn == nil {
+			var c = make(chan error)
+			s.queuedMessages = append(s.queuedMessages, struct {
+				b   []byte
+				ret chan error
+			}{
+				b:   msg,
+				ret: c,
+			})
+			s.m.Unlock()
+			return <-c
+		} else {
+			err := s._send(msg)
+			s.m.Unlock()
+			return err
+		}
+	}
 }
 
 //Tell Mevlink to broadcast an RLP-encoded transaction.
 func (s *Streamer) EmitTransaction(txb []byte) error {
-  return errors.Wrap(s.send(append([]byte{EMIT_TRANSACTION}, txb...)), "error emitting tx")
+	return errors.Wrap(s.send(append([]byte{EMIT_TRANSACTION}, txb...)), "error emitting tx")
 }
 
 func (s *Streamer) Stream() error {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
-  s.active = true
-  defer func() {
-    s.active = false
-  }()
+	s.active = true
+	defer func() {
+		s.active = false
+	}()
 	for {
 		if disconnect_id, err := s._stream(); err != nil {
 			log.Println("mevlink streaming error: " + err.Error() + "; reconnecting in one second...")
@@ -171,7 +171,7 @@ func (s *Streamer) _stream() (int, error) {
 			v.ret <- nil
 		}
 	}
-  s.queuedMessages = s.queuedMessages[0:0]
+	s.queuedMessages = s.queuedMessages[0:0]
 	s.m.Unlock()
 	defer func() {
 		s.m.Lock()
@@ -180,7 +180,7 @@ func (s *Streamer) _stream() (int, error) {
 		for _, v := range s.queuedMessages {
 			v.ret <- errors.New("connection closed")
 		}
-    s.queuedMessages = s.queuedMessages[0:0]
+		s.queuedMessages = s.queuedMessages[0:0]
 		s.m.Unlock()
 	}()
 
@@ -279,10 +279,11 @@ func (s *Streamer) _stream() (int, error) {
 				return -1, errors.New("mac was incorrect")
 			} else {
 				s.m.Lock()
-				for _, f := range s.subs {
+				subs := append([]func(txb []byte, noticed, propagated time.Time){}, s.subs...)
+				s.m.Unlock()
+				for _, f := range subs {
 					f(tx, noticed, propagated)
 				}
-				s.m.Unlock()
 			}
 		default:
 			return -1, errors.New("unknown message id")
