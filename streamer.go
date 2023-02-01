@@ -292,33 +292,37 @@ func (s *Streamer) _stream() (int, error) {
 }
 
 func (s *Streamer) connect() (net.Conn, hash.Hash, error) {
-	var streaming_ip_loc string
-	if provided_host := os.Getenv("MEVLINK_HOST"); provided_host == "" {
-		streaming_ip_loc = "https://mevlink.com/api/"
-	} else {
-		streaming_ip_loc = provided_host + "/api/"
-	}
-
-	var get_node_ips_path string
-	switch s.Network {
-	case Ethereum:
-		get_node_ips_path = "get_eth_node_ips"
-	case BinanceSmartChain:
-		get_node_ips_path = "get_bsc_node_ips"
-	default:
-		return nil, nil, errors.New("Unsupported network")
-	}
-
-	streaming_ip_loc += get_node_ips_path
-
-	resp, err := http.Get(streaming_ip_loc)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "error requesting mevlink relay ips")
-	}
-
 	var ips []string
-	if err := json.NewDecoder(resp.Body).Decode(&ips); err != nil {
-		return nil, nil, errors.Wrap(err, "error decoding mevlink relay response")
+	if node_ip := os.Getenv("MEVLINK_NODE_IP"); node_ip != "" {
+		ips = []string{node_ip}
+	} else {
+		var streaming_ip_loc string
+		if provided_host := os.Getenv("MEVLINK_HOST"); provided_host == "" {
+			streaming_ip_loc = "https://mevlink.com/api/"
+		} else {
+			streaming_ip_loc = provided_host + "/api/"
+		}
+
+		var get_node_ips_path string
+		switch s.Network {
+		case Ethereum:
+			get_node_ips_path = "get_eth_node_ips"
+		case BinanceSmartChain:
+			get_node_ips_path = "get_bsc_node_ips"
+		default:
+			return nil, nil, errors.New("Unsupported network")
+		}
+
+		streaming_ip_loc += get_node_ips_path
+
+		resp, err := http.Get(streaming_ip_loc)
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "error requesting mevlink relay ips")
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&ips); err != nil {
+			return nil, nil, errors.Wrap(err, "error decoding mevlink relay response")
+		}
 	}
 
 	//TODO: Connect to all and then pick based on actual tx receive time instead of tcp latency
