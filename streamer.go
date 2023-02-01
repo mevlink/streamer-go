@@ -80,7 +80,7 @@ func (s *Streamer) _send(msg []byte) error {
 
 func (s *Streamer) send(msg []byte) error {
 	s.m.Lock()
-	if s.active {
+	if !s.active {
 		s.m.Unlock()
 		return errors.New("no active connection; haven't yet begun streaming")
 	} else {
