@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,16 +27,22 @@ const (
 	BinanceSmartChain Network = 56
 )
 
+type NullableHash struct {
+	Valid bool
+	Hash  []byte
+}
+
 type Streamer struct {
 	m sync.Mutex
 
-	KeyId     string
-	KeySecret string
-	Network   Network
+	KeyId        string
+	KeySecret    string
+	Network      Network
+	streamConfig *StreamConfig
 
 	active bool
 
-	subs []func(txb []byte, noticed, propagated time.Time)
+	subs []func(txb []byte, maybe_hash NullableHash, noticed, propagated time.Time)
 
 	queuedMessages []struct {
 		b   []byte
@@ -47,6 +54,10 @@ type Streamer struct {
 	cancel context.CancelFunc
 }
 
+type StreamConfig struct {
+	IncludeHashes bool
+}
+
 //Creates a streamer with a userId and keyId, which you can retrieve from the
 //mevlink website.
 func NewStreamer(keyId, keySecret string, network Network) *Streamer {
@@ -54,16 +65,40 @@ func NewStreamer(keyId, keySecret string, network Network) *Streamer {
 	ret.KeyId = keyId
 	ret.KeySecret = keySecret
 	ret.Network = network
+	ret.streamConfig = &StreamConfig{
+		IncludeHashes: false,
+	}
 	return &ret
 }
 
 //Provides a callback giving RLP-encoded transaction bytes when they are
 //received. See the Stream() function code for a detailed description of the
 //noticed and propagated times.
-func (s *Streamer) OnTransaction(f func(txb []byte, noticed, propagated time.Time)) {
+func (s *Streamer) OnTransaction(f func(txb []byte, hash NullableHash, noticed, propagated time.Time)) {
 	s.m.Lock()
 	s.subs = append(s.subs, f)
 	s.m.Unlock()
+}
+
+func (s *Streamer) emitConfiguration() error {
+	if s.streamConfig == nil {
+		return s._send([]byte{CONFIGURE, 0x00, 0x00, 0x00, 0x00})
+	} else if !s.streamConfig.IncludeHashes {
+		return s._send([]byte{CONFIGURE, 0x00, 0x00, 0x00, 0x01})
+	} else {
+		return s._send([]byte{CONFIGURE, 0x00, 0x00, 0x00, 0x02})
+	}
+}
+
+func (s *Streamer) ConfigureStream(config *StreamConfig) error {
+	s.m.Lock()
+	s.streamConfig = config
+	defer s.m.Unlock()
+	if s.conn != nil {
+		return s.emitConfiguration()
+	} else {
+		return nil
+	}
 }
 
 func (s *Streamer) _send(msg []byte) error {
@@ -80,26 +115,21 @@ func (s *Streamer) _send(msg []byte) error {
 
 func (s *Streamer) send(msg []byte) error {
 	s.m.Lock()
-	if !s.active {
+	if s.conn == nil {
+		var c = make(chan error)
+		s.queuedMessages = append(s.queuedMessages, struct {
+			b   []byte
+			ret chan error
+		}{
+			b:   msg,
+			ret: c,
+		})
 		s.m.Unlock()
-		return errors.New("no active connection; haven't yet begun streaming")
+		return <-c
 	} else {
-		if s.conn == nil {
-			var c = make(chan error)
-			s.queuedMessages = append(s.queuedMessages, struct {
-				b   []byte
-				ret chan error
-			}{
-				b:   msg,
-				ret: c,
-			})
-			s.m.Unlock()
-			return <-c
-		} else {
-			err := s._send(msg)
-			s.m.Unlock()
-			return err
-		}
+		err := s._send(msg)
+		s.m.Unlock()
+		return err
 	}
 }
 
@@ -164,6 +194,7 @@ func (s *Streamer) _stream() (int, error) {
 
 	s.m.Lock()
 	s.conn = conn
+	s.emitConfiguration()
 	for _, v := range s.queuedMessages {
 		if err := s._send(v.b); err != nil {
 			v.ret <- err
@@ -196,6 +227,9 @@ func (s *Streamer) _stream() (int, error) {
 			return -1, errors.Wrap(err, "error reading msg id byte")
 		}
 		switch msg_id[0] {
+		case DISCONNECT:
+			var disc_id, err = readUntilFull(1, conn)
+			return int(disc_id[0]), err
 		case TRANSACTION:
 			//Each transaction message includes three things: the encoded
 			//transaction, an 8 byte unix microsecond timestamp indicating when the
@@ -279,14 +313,98 @@ func (s *Streamer) _stream() (int, error) {
 				return -1, errors.New("mac was incorrect")
 			} else {
 				s.m.Lock()
-				subs := append([]func(txb []byte, noticed, propagated time.Time){}, s.subs...)
+				subs := append([]func(txb []byte, hash NullableHash, noticed, propagated time.Time){}, s.subs...)
 				s.m.Unlock()
 				for _, f := range subs {
-					f(tx, noticed, propagated)
+					f(tx, NullableHash{Valid: false, Hash: nil}, noticed, propagated)
+				}
+			}
+		case TRANSACTION_WITH_HASH:
+			//This is the above code with the addition of hashes. These come instead of regular TRANSACTIONS messages if you make a CONFIGURE message asking for them.
+			tx, err := readUntilFull(1, conn)
+			if err != nil {
+				return 0, errors.Wrap(err, "error reading tx ln header")
+			}
+			var remaining int
+
+			if tx[0] > 0x80 && tx[0] < 0xb8 {
+				remaining = int(tx[0] - 0x80)
+			} else if tx[0] > 0xb7 && tx[0] < 0xc0 {
+				var ln_of_ln = tx[0] - 0xb7
+				if i_b, err := readUntilFull(int(ln_of_ln), conn); err != nil {
+					return -1, errors.Wrap(err, "error reading ln of ln")
+				} else {
+					tx = append(tx, i_b...)
+					remaining = int(binary.BigEndian.Uint64(append(make([]byte, 8-len(i_b)), i_b...)))
+				}
+			} else if tx[0] > 0xc0 && tx[0] < 0xf8 {
+				remaining = int(tx[0] - 0xc0)
+			} else if tx[0] > 0xf7 {
+				var ln_of_ln = tx[0] - 0xf7
+				if i_b, err := readUntilFull(int(ln_of_ln), conn); err != nil {
+					return -1, errors.Wrap(err, "error reading ln of ln")
+				} else {
+					tx = append(tx, i_b...)
+					remaining = int(binary.BigEndian.Uint64(append(make([]byte, 8-len(i_b)), i_b...)))
+				}
+			} else {
+				log.Fatal("bad transaction data; got ln of ", tx[0])
+			}
+
+			if txb, err := readUntilFull(remaining, conn); err != nil {
+				return -1, errors.Wrap(err, "error reading tx bytes")
+			} else {
+				tx = append(tx, txb...)
+			}
+
+			//Here they are!
+			hash_b, err := readUntilFull(32, conn)
+			if err != nil {
+				return -1, errors.Wrap(err, "error reading hash bytes")
+			}
+
+			propagated_b, err := readUntilFull(8, conn)
+			if err != nil {
+				return -1, errors.Wrap(err, "error reading propagation bytes")
+			}
+			propagated := time.UnixMicro(int64(binary.BigEndian.Uint64(propagated_b)))
+
+			//Finally, we have the "noticed" timestamp. This gives the earliest time
+			//mevlink heard of the transaction's existence from other peers on BSC.
+			//Note that this may not be the earliest time *any* mevlink relay has
+			//heard about the transaction at time of sending.
+			noticed_b, err := readUntilFull(8, conn)
+			if err != nil {
+				return -1, errors.Wrap(err, "error reading noticed bytes")
+			}
+			noticed := time.UnixMicro(int64(binary.BigEndian.Uint64(noticed_b)))
+
+			//Finally, the mac
+			given_mac, err := readUntilFull(32, conn)
+			if err != nil {
+				return -1, errors.Wrap(err, "error reading mac")
+			}
+			mac.Reset()
+			mac.Write(msg_id)
+			mac.Write(tx)
+			mac.Write(hash_b)
+			mac.Write(propagated_b)
+			mac.Write(noticed_b)
+			if bytes.Compare(given_mac, mac.Sum(nil)) != 0 {
+				return -1, errors.New("mac was incorrect")
+			} else {
+				s.m.Lock()
+				subs := append([]func(txb []byte, maybeHash NullableHash, noticed, propagated time.Time){}, s.subs...)
+				s.m.Unlock()
+				for _, f := range subs {
+					f(tx, NullableHash{
+						Valid: true,
+						Hash:  hash_b,
+					}, noticed, propagated)
 				}
 			}
 		default:
-			return -1, errors.New("unknown message id")
+			return -1, errors.New("unknown message id of " + strconv.Itoa(int(msg_id[0])))
 		}
 	}
 }
@@ -395,6 +513,8 @@ const (
 	TRANSACTION
 	DISCONNECT
 	EMIT_TRANSACTION
+	CONFIGURE
+	TRANSACTION_WITH_HASH
 )
 
 func readUntilFull(amount int, conn net.Conn) ([]byte, error) {
